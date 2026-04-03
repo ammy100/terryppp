@@ -1,0 +1,138 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {uid}
+    // Fields:
+    //   - uid: string (required)
+    //   - displayName: string (required)
+    //   - email: string (required, email format)
+    //   - photoURL: string (optional, uri format)
+    //   - bio: string (optional)
+    //   - role: string (required, enum: ['artist', 'admin'])
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: exhibitions
+    // Document ID: {exhibitionId}
+    // Fields:
+    //   - id: string (required)
+    //   - artistUid: string (required)
+    //   - title: string (required)
+    //   - description: string (optional)
+    //   - type: string (required, enum: ['Virtual Reality', 'Augmented Reality', 'Physical Gallery'])
+    //   - coverImage: string (optional, uri format)
+    //   - status: string (required, enum: ['draft', 'published', 'archived'])
+    //   - createdAt: timestamp (required)
+    //   - updatedAt: timestamp (required)
+    //
+    // Collection: exhibitions/{exhibitionId}/artworks
+    // Document ID: {artworkId}
+    // Fields:
+    //   - id: string (required)
+    //   - exhibitionId: string (required)
+    //   - artistUid: string (required)
+    //   - title: string (optional)
+    //   - description: string (optional)
+    //   - imageUrl: string (required, uri format)
+    //   - analysis: string (optional)
+    //   - metadata: map (optional)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.artistUid;
+    }
+
+    function isUserDocOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "waithukisammy@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.uid is string && data.uid.size() > 0 &&
+             data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
+             isValidEmail(data.email) &&
+             (data.role == 'artist' || data.role == 'admin');
+    }
+
+    function isValidExhibition(data) {
+      return data.artistUid is string && data.artistUid == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             (data.type in ['Virtual Reality', 'Augmented Reality', 'Physical Gallery']) &&
+             (data.status in ['draft', 'published', 'archived']);
+    }
+
+    function isValidArtwork(data) {
+      return data.artistUid is string && data.artistUid == request.auth.uid &&
+             data.exhibitionId is string &&
+             isValidUrl(data.imageUrl);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isUserDocOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == 'artist' || isAdmin());
+      allow update: if (isUserDocOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /exhibitions/{exhibitionId} {
+      allow read: if resource.data.status == 'published' || isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidExhibition(request.resource.data);
+      allow update: if (isDocOwner() && isValidExhibition(request.resource.data)) || isAdmin();
+      allow delete: if isDocOwner() || isAdmin();
+
+      match /artworks/{artworkId} {
+        allow read: if get(/databases/$(database)/documents/exhibitions/$(exhibitionId)).data.status == 'published' || isDocOwner() || isAdmin();
+        allow create: if isAuthenticated() && isValidArtwork(request.resource.data) && (get(/databases/$(database)/documents/exhibitions/$(exhibitionId)).data.artistUid == request.auth.uid);
+        allow update: if (isDocOwner() && isValidArtwork(request.resource.data)) || isAdmin();
+        allow delete: if isDocOwner() || isAdmin();
+      }
+    }
+
+    match /{path=**}/artworks/{artworkId} {
+      allow read: if isAuthenticated();
+    }
+  }
+}
